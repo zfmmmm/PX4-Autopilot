@@ -746,6 +746,49 @@ void EKF2::Run()
 	if (imu_updated) {
 		const hrt_abstime now = imu_sample_new.time_us;
 
+// ------------------------------------------------------------------
+		// [新增] 1. 跨介质变形触发逻辑 (处理状态突变)
+		// ------------------------------------------------------------------
+		if (_input_rc_sub.updated()) {
+			input_rc_s rc;
+
+			if (_input_rc_sub.copy(&rc)) {
+				// 假设使用 AUX1 (Channel 6 -> index 5)
+				const bool current_switch_state = (rc.values[5] > 1500);
+
+				if (current_switch_state != _last_morph_switch_state) {
+					// A. 触发 EKF 状态瞬移 (修改历史)
+					_ekf.performArmMorphTransform(current_switch_state);
+
+					// B. 更新数据旋转矩阵 (修改未来)
+					// 如果切入水中模式，设置 90 度旋转；否则恢复单位阵
+					if (current_switch_state) {
+						// Pitch +90 度 (注意：必须与 performArmMorphTransform 中的方向一致)
+						_magical_rotation_offset = matrix::Dcmf(matrix::Eulerf(0, M_PI_2_F, 0));
+
+					} else {
+						_magical_rotation_offset = matrix::eye<float, 3>();
+					}
+
+					_last_morph_switch_state = current_switch_state;
+				}
+			}
+		}
+
+		// ------------------------------------------------------------------
+		// [新增] 2. 数据拦截与旋转 (欺骗观测值，防止回弹)
+		// ------------------------------------------------------------------
+		// 只有当旋转矩阵不是单位阵时才计算，节省性能
+		if (_last_morph_switch_state) {
+			// 旋转 Delta Angle (角速度积分)
+			imu_sample_new.delta_ang = _magical_rotation_offset * imu_sample_new.delta_ang;
+
+			// 旋转 Delta Velocity (加速度积分)
+			imu_sample_new.delta_vel = _magical_rotation_offset * imu_sample_new.delta_vel;
+
+			// 注意：delta_ang_dt 和 delta_vel_dt 不需要变
+		}
+
 		// push imu data into estimator
 		_ekf.setIMUData(imu_sample_new);
 
@@ -799,6 +842,29 @@ void EKF2::Run()
 
 		// run the EKF update and output
 		const hrt_abstime ekf_update_start = hrt_absolute_time();
+
+		// ------------------------------------------------------------------
+		// [Add this] 跨介质变形触发逻辑
+		// ------------------------------------------------------------------
+		if (_input_rc_sub.updated()) {
+			input_rc_s rc;
+
+			if (_input_rc_sub.copy(&rc)) {
+				// 假设使用 AUX1 (Channel 6 -> index 5)
+				// 阈值 > 1500 为水中模式 (竖立)
+				bool current_switch_state = (rc.values[5] > 1500);
+
+				// 仅在开关状态发生跳变时触发 (Edge Detection)
+				if (current_switch_state != _last_morph_switch_state) {
+
+					// 执行核心 EKF 状态瞬移
+					_ekf.performArmMorphTransform(current_switch_state);
+
+					// 更新状态记录
+					_last_morph_switch_state = current_switch_state;
+				}
+			}
+		}
 
 		if (_ekf.update()) {
 			perf_set_elapsed(_ekf_update_perf, hrt_elapsed_time(&ekf_update_start));

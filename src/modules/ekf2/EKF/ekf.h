@@ -433,7 +433,9 @@ public:
 	}
 
 	void updateParameters();
-
+	// [Add this] Special function for Morphing Drone
+	// forcing a step change in pitch by 90 degrees
+	void performArmMorphTransform(bool enter_water_mode);
 	friend class AuxGlobalPosition;
 
 private:

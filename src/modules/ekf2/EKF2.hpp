@@ -87,7 +87,8 @@
 #include <uORB/topics/vehicle_odometry.h>
 #include <uORB/topics/vehicle_status.h>
 #include <uORB/topics/yaw_estimator_status.h>
-
+#include <uORB/topics/input_rc.h>
+#include <lib/matrix/matrix/math.hpp> // 确保能用 Dcmf
 #if defined(CONFIG_EKF2_AIRSPEED)
 # include <uORB/topics/airspeed.h>
 # include <uORB/topics/airspeed_validated.h>
@@ -158,7 +159,12 @@ public:
 	int instance() const { return _instance; }
 
 private:
+// [新增] 遥控器订阅和状态变量
+	uORB::Subscription _input_rc_sub{ORB_ID(input_rc)};
+	bool _last_morph_switch_state{false};
 
+	// [新增] 用于持续旋转 IMU 数据的矩阵
+	matrix::Dcmf _magical_rotation_offset{matrix::eye<float, 3>()};
 	static constexpr uint8_t MAX_NUM_IMUS = 4;
 	static constexpr uint8_t MAX_NUM_MAGS = 4;
 

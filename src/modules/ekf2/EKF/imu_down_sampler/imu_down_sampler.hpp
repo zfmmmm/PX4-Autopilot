@@ -59,9 +59,9 @@ public:
 		reset();
 		return imu;
 	}
-
-private:
 	void reset();
+private:
+
 
 	imuSample _imu_down_sampled{};
 	Quatf _delta_angle_accumulated{};

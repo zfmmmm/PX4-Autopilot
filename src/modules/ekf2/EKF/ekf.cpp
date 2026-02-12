@@ -558,3 +558,50 @@ void Ekf::print_status()
 
 	_output_predictor.print_status();
 }
+
+void Ekf::performArmMorphTransform(bool enter_water_mode)
+{
+	// 1. 定义旋转四元数 (机体坐标系下的旋转)
+	// 假设变形是机头向上翘起 90 度 (Pitch +90)
+	// 如果方向反了，把 M_PI_2_F 改为 -M_PI_2_F
+	const float pitch_angle = enter_water_mode ? M_PI_2_F : -M_PI_2_F;
+	const Quatf q_rot(Eulerf(0.0f, pitch_angle, 0.0f));
+
+	// 2. 计算新的姿态
+	// q_new = q_old * q_rot (机体轴旋转用右乘)
+	Quatf q_new = _state.quat_nominal * q_rot;
+	q_new.normalize();
+
+	// 3. 强制覆盖当前状态
+	_state.quat_nominal = q_new;
+	_R_to_earth = Dcmf(_state.quat_nominal); // 更新旋转矩阵缓存
+
+	// 4. 重置姿态协方差 (Covariance Reset)
+	// 使用正确的参数名: ekf2_angerr_init (Initial angular alignment error)
+	const float init_tilt_var = sq(_params.ekf2_angerr_init);
+
+	// 对于航向误差，可以使用同样的初始值，或者给一个较大的固定值(例如 15度)
+	// 因为 EKF2_ANGERR_INIT 通常较小(0.1 rad)，如果磁罗盘环境不好，给大一点更安全
+	const float init_heading_var = sq(math::max(_params.ekf2_angerr_init, 0.3f));
+
+	// P 是协方差矩阵，前 4x4 是四元数的方差
+	// 我们将其重置为初始的不确定度，并解除与其他状态的相关性
+	P.uncorrelateCovarianceSetVariance<4>(0, 0.0f);
+
+	// 重置四元数协方差对角线 (简化处理: 假设四元数误差主要由倾斜和航向误差组成)
+	// 注意：这里是对四元数状态方差的直接赋值，这是一种近似。
+	// 更严谨的做法是转换到姿态误差协方差，但直接重置 P(0,0)-P(3,3) 在强制重置场景下是有效的工程手段。
+	P(0, 0) = init_tilt_var;
+	P(1, 1) = init_tilt_var;
+	P(2, 2) = init_tilt_var;
+	P(3, 3) = init_heading_var;
+
+	// 5. 必须重置速度协方差
+	// 因为坐标系旋转后，原本的 Body X 速度变成了 Body Z 速度，
+	// 如果不重置协方差，EKF 会用错误的互相关性去修正速度，导致速度发散。
+	// State::vel.idx 是速度状态的起始索引 (通常是 4)
+	P.uncorrelateCovarianceSetVariance<3>(State::vel.idx, sq(1.0f)); // 重置为 1.0 m/s 的不确定度
+
+	// 6. 记录日志
+	ECL_INFO("Morph Transform Triggered! Water Mode: %d", (int)enter_water_mode);
+}
