@@ -188,8 +188,17 @@ private:
 	float _reference_frame_step_rad{0.f};
 	matrix::Dcmf _reference_frame_rotation{matrix::Eulerf(0.f, 0.f, 0.f)};
 
+	enum class ReferenceSwitchState : uint8_t {
+		Unknown = 0,
+		Low,
+		High
+	};
+
+	ReferenceSwitchState _reference_switch_state{ReferenceSwitchState::Unknown};
+
 	static constexpr int kReferenceSwitchRCChannel{5}; // zero-based index (channel 6)
-	static constexpr uint16_t kReferenceSwitchThresholdPwm{1500};
+	static constexpr uint16_t kReferenceSwitchPwmLow{1400};
+	static constexpr uint16_t kReferenceSwitchPwmHigh{1600};
 
 	bool _accel_cal_available{false};
 	bool _gyro_cal_available{false};

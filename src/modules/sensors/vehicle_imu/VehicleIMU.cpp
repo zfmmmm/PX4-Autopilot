@@ -780,13 +780,34 @@ void VehicleIMU::UpdateAttitudeReferenceFromRC()
 	}
 
 	const uint16_t channel_pwm = input_rc.values[kReferenceSwitchRCChannel];
-	const bool reference_pitch_90_enabled = channel_pwm > kReferenceSwitchThresholdPwm;
 
-	if (reference_pitch_90_enabled != _reference_pitch_90_enabled) {
-		_reference_pitch_90_enabled = reference_pitch_90_enabled;
+	ReferenceSwitchState new_switch_state = _reference_switch_state;
+
+	if (channel_pwm >= kReferenceSwitchPwmHigh) {
+		new_switch_state = ReferenceSwitchState::High;
+
+	} else if (channel_pwm <= kReferenceSwitchPwmLow) {
+		new_switch_state = ReferenceSwitchState::Low;
+	}
+
+	if (_reference_switch_state == ReferenceSwitchState::Unknown) {
+		_reference_switch_state = new_switch_state;
+		_reference_pitch_90_enabled = (_reference_switch_state == ReferenceSwitchState::High);
 		_reference_frame_rotation = Dcmf(Eulerf(0.f, _reference_pitch_90_enabled ? M_PI_F / 2.f : 0.f, 0.f));
-		_reference_frame_step_rad = _reference_pitch_90_enabled ? M_PI_F / 2.f : -M_PI_F / 2.f;
-		_reference_frame_step_pending = true;
+		return;
+	}
+
+	if ((new_switch_state != _reference_switch_state) && (new_switch_state != ReferenceSwitchState::Unknown)) {
+		const bool reference_pitch_90_enabled = (new_switch_state == ReferenceSwitchState::High);
+
+		if (reference_pitch_90_enabled != _reference_pitch_90_enabled) {
+			_reference_pitch_90_enabled = reference_pitch_90_enabled;
+			_reference_frame_rotation = Dcmf(Eulerf(0.f, _reference_pitch_90_enabled ? M_PI_F / 2.f : 0.f, 0.f));
+			_reference_frame_step_rad = _reference_pitch_90_enabled ? M_PI_F / 2.f : -M_PI_F / 2.f;
+			_reference_frame_step_pending = true;
+		}
+
+		_reference_switch_state = new_switch_state;
 	}
 }
 
