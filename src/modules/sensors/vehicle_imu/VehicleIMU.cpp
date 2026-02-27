@@ -551,9 +551,10 @@ bool VehicleIMU::Publish()
 	if (_accel_integrator.reset(delta_velocity, imu.delta_velocity_dt)
 	    && _gyro_integrator.reset(delta_angle, imu.delta_angle_dt)) {
 
+		const Dcmf reference_frame_rotation = _reference_frame_rotation;
+
 		if (_reference_frame_step_pending) {
 			delta_angle(1) += _reference_frame_step_rad;
-			_reference_frame_step_pending = false;
 		}
 
 		if (_accel_calibration.enabled() && _gyro_calibration.enabled()) {
@@ -563,7 +564,7 @@ bool VehicleIMU::Publish()
 			const float gyro_dt_s = 1.e-6f * imu.delta_angle_dt;
 			const Vector3f angular_velocity{_gyro_calibration.Correct(delta_angle / gyro_dt_s)};
 			UpdateGyroVibrationMetrics(angular_velocity);
-			const Vector3f delta_angle_corrected{_reference_frame_rotation * (angular_velocity * gyro_dt_s)};
+			const Vector3f delta_angle_corrected{reference_frame_rotation * (angular_velocity * gyro_dt_s)};
 
 			// accumulate delta angle coning corrections
 			_coning_norm_accum += accumulated_coning_corrections.norm() * gyro_dt_s;
@@ -575,7 +576,7 @@ bool VehicleIMU::Publish()
 			const float accel_dt_s = 1.e-6f * imu.delta_velocity_dt;
 			const Vector3f acceleration{_accel_calibration.Correct(delta_velocity / accel_dt_s)};
 			UpdateAccelVibrationMetrics(acceleration);
-			const Vector3f delta_velocity_corrected{_reference_frame_rotation * (acceleration * accel_dt_s)};
+			const Vector3f delta_velocity_corrected{reference_frame_rotation * (acceleration * accel_dt_s)};
 
 			// vehicle_imu_status
 			//  publish before vehicle_imu so that error counts are available synchronously if needed
@@ -677,6 +678,11 @@ bool VehicleIMU::Publish()
 			// record gyro publication latency and integrated samples
 			_gyro_publish_latency_mean_us.update(imu.timestamp - _gyro_timestamp_last);
 			_gyro_update_latency_mean_us.update(imu.timestamp - _gyro_timestamp_sample_last);
+
+			if (_reference_frame_step_pending) {
+				_reference_frame_rotation = _reference_frame_rotation_pending;
+				_reference_frame_step_pending = false;
+			}
 
 			updated = true;
 		}
@@ -794,6 +800,7 @@ void VehicleIMU::UpdateAttitudeReferenceFromRC()
 		_reference_switch_state = new_switch_state;
 		_reference_pitch_90_enabled = (_reference_switch_state == ReferenceSwitchState::High);
 		_reference_frame_rotation = Dcmf(Eulerf(0.f, _reference_pitch_90_enabled ? M_PI_F / 2.f : 0.f, 0.f));
+		_reference_frame_rotation_pending = _reference_frame_rotation;
 		return;
 	}
 
@@ -802,7 +809,7 @@ void VehicleIMU::UpdateAttitudeReferenceFromRC()
 
 		if (reference_pitch_90_enabled != _reference_pitch_90_enabled) {
 			_reference_pitch_90_enabled = reference_pitch_90_enabled;
-			_reference_frame_rotation = Dcmf(Eulerf(0.f, _reference_pitch_90_enabled ? M_PI_F / 2.f : 0.f, 0.f));
+			_reference_frame_rotation_pending = Dcmf(Eulerf(0.f, _reference_pitch_90_enabled ? M_PI_F / 2.f : 0.f, 0.f));
 			_reference_frame_step_rad = _reference_pitch_90_enabled ? M_PI_F / 2.f : -M_PI_F / 2.f;
 			_reference_frame_step_pending = true;
 		}

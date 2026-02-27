@@ -187,6 +187,7 @@ private:
 	bool _reference_frame_step_pending{false};
 	float _reference_frame_step_rad{0.f};
 	matrix::Dcmf _reference_frame_rotation{matrix::Eulerf(0.f, 0.f, 0.f)};
+	matrix::Dcmf _reference_frame_rotation_pending{matrix::Eulerf(0.f, 0.f, 0.f)};
 
 	enum class ReferenceSwitchState : uint8_t {
 		Unknown = 0,
