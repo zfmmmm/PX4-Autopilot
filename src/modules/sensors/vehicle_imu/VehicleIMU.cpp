@@ -800,7 +800,7 @@ void VehicleIMU::UpdateAttitudeReferenceFromRC()
 	if (_reference_switch_state == ReferenceSwitchState::Unknown) {
 		_reference_switch_state = new_switch_state;
 		_reference_pitch_90_enabled = (_reference_switch_state == ReferenceSwitchState::High);
-		_reference_frame_rotation = Dcmf(Eulerf(0.f, _reference_pitch_90_enabled ? M_PI_F / 4.f : 0.f, 0.f));
+		_reference_frame_rotation = Dcmf(Eulerf(0.f, _reference_pitch_90_enabled ? M_PI_F / 2.f : 0.f, 0.f));
 		_reference_frame_rotation_pending = _reference_frame_rotation;
 		return;
 	}
@@ -810,7 +810,7 @@ void VehicleIMU::UpdateAttitudeReferenceFromRC()
 
 		if (reference_pitch_90_enabled != _reference_pitch_90_enabled) {
 			_reference_pitch_90_enabled = reference_pitch_90_enabled;
-			_reference_frame_rotation_pending = Dcmf(Eulerf(0.f, _reference_pitch_90_enabled ? M_PI_F / 4.f : 0.f, 0.f));
+			_reference_frame_rotation_pending = Dcmf(Eulerf(0.f, _reference_pitch_90_enabled ? M_PI_F / 2.f : 0.f, 0.f));
 			_reference_frame_step_rad = _reference_pitch_90_enabled ? M_PI_F / 2.f : -M_PI_F / 2.f;
 			_reference_frame_step_pending = true;
 		}
