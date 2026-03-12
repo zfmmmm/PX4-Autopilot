@@ -51,6 +51,7 @@
 #include <uORB/SubscriptionMultiArray.hpp>
 #include <uORB/SubscriptionCallback.hpp>
 #include <uORB/topics/estimator_sensor_bias.h>
+#include <uORB/topics/input_rc.h>
 #include <uORB/topics/parameter_update.h>
 #include <uORB/topics/sensor_accel.h>
 #include <uORB/topics/sensor_gyro.h>
@@ -92,6 +93,8 @@ private:
 	void SensorCalibrationUpdate();
 	void SensorCalibrationSaveAccel();
 	void SensorCalibrationSaveGyro();
+	void UpdateAttitudeReferenceFromRC();
+	matrix::Dcmf ComputeReferenceRotation(bool reference_enabled) const;
 
 	// return the square of two floating point numbers
 	static constexpr float sq(float var) { return var * var; }
@@ -110,6 +113,7 @@ private:
 	uORB::SubscriptionCallbackWorkItem _sensor_gyro_sub;
 
 	uORB::Subscription _vehicle_control_mode_sub{ORB_ID(vehicle_control_mode)};
+	uORB::Subscription _input_rc_sub{ORB_ID(input_rc)};
 
 	calibration::Accelerometer _accel_calibration{};
 	calibration::Gyroscope _gyro_calibration{};
@@ -178,6 +182,29 @@ private:
 	const uint8_t _instance;
 
 	bool _armed{false};
+
+	// One-key attitude reference switch (RC channel 6): level frame <-> +90 deg pitch frame
+	bool _reference_pitch_90_enabled{false};
+	bool _reference_frame_step_pending{false};
+	float _reference_frame_step_rad{0.f};
+	matrix::Dcmf _reference_frame_rotation{matrix::Eulerf(0.f, 0.f, 0.f)};
+	matrix::Dcmf _reference_frame_rotation_pending{matrix::Eulerf(0.f, 0.f, 0.f)};
+
+	enum class ReferenceSwitchState : uint8_t {
+		Unknown = 0,
+		Low,
+		High
+	};
+
+	ReferenceSwitchState _reference_switch_state{ReferenceSwitchState::Unknown};
+
+	static constexpr int kReferenceSwitchRCChannel{5}; // zero-based index (channel 6)
+	static constexpr uint16_t kReferenceSwitchPwmLow{1400};
+	static constexpr uint16_t kReferenceSwitchPwmHigh{1600};
+
+	// Select which published attitude axis gets the 90deg re-reference step.
+	// 0 = roll (X), 1 = pitch (Y), 2 = yaw (Z)
+	static constexpr int kReferenceStepAxis{1};
 
 	bool _accel_cal_available{false};
 	bool _gyro_cal_available{false};
