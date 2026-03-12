@@ -553,6 +553,10 @@ bool VehicleIMU::Publish()
 
 		const Dcmf reference_frame_rotation = _reference_frame_rotation;
 
+		if (_reference_frame_step_pending) {
+			delta_angle(1) += _reference_frame_step_rad;
+		}
+
 		if (_accel_calibration.enabled() && _gyro_calibration.enabled()) {
 
 			// delta angle: apply offsets, scale, and board rotation
@@ -560,12 +564,7 @@ bool VehicleIMU::Publish()
 			const float gyro_dt_s = 1.e-6f * imu.delta_angle_dt;
 			const Vector3f angular_velocity{_gyro_calibration.Correct(delta_angle / gyro_dt_s)};
 			UpdateGyroVibrationMetrics(angular_velocity);
-			Vector3f delta_angle_corrected{reference_frame_rotation * (angular_velocity * gyro_dt_s)};
-
-			// Apply one-shot attitude step directly in published frame (pitch axis) to avoid axis-coupling.
-			if (_reference_frame_step_pending) {
-				delta_angle_corrected(1) += _reference_frame_step_rad;
-			}
+			const Vector3f delta_angle_corrected{reference_frame_rotation * (angular_velocity * gyro_dt_s)};
 
 			// accumulate delta angle coning corrections
 			_coning_norm_accum += accumulated_coning_corrections.norm() * gyro_dt_s;
