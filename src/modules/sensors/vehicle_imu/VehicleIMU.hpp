@@ -94,6 +94,7 @@ private:
 	void SensorCalibrationSaveAccel();
 	void SensorCalibrationSaveGyro();
 	void UpdateAttitudeReferenceFromRC();
+	matrix::Dcmf ComputeReferenceRotation(bool reference_enabled) const;
 
 	// return the square of two floating point numbers
 	static constexpr float sq(float var) { return var * var; }
@@ -200,6 +201,10 @@ private:
 	static constexpr int kReferenceSwitchRCChannel{5}; // zero-based index (channel 6)
 	static constexpr uint16_t kReferenceSwitchPwmLow{1400};
 	static constexpr uint16_t kReferenceSwitchPwmHigh{1600};
+
+	// Select which published attitude axis gets the 90deg re-reference step.
+	// 0 = roll (X), 1 = pitch (Y), 2 = yaw (Z)
+	static constexpr int kReferenceStepAxis{1};
 
 	bool _accel_cal_available{false};
 	bool _gyro_cal_available{false};

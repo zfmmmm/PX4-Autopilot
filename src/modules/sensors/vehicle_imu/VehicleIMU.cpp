@@ -562,9 +562,9 @@ bool VehicleIMU::Publish()
 			UpdateGyroVibrationMetrics(angular_velocity);
 			Vector3f delta_angle_corrected{reference_frame_rotation * (angular_velocity * gyro_dt_s)};
 
-			// Apply one-shot attitude step directly in published frame (pitch axis) to avoid axis-coupling.
+			// Apply one-shot attitude step directly in the selected published axis to avoid axis-coupling.
 			if (_reference_frame_step_pending) {
-				delta_angle_corrected(1) += _reference_frame_step_rad;
+				delta_angle_corrected(kReferenceStepAxis) += _reference_frame_step_rad;
 			}
 
 			// accumulate delta angle coning corrections
@@ -774,6 +774,16 @@ void VehicleIMU::UpdateGyroVibrationMetrics(const Vector3f &angular_velocity)
 	_angular_velocity_prev = angular_velocity;
 }
 
+Dcmf VehicleIMU::ComputeReferenceRotation(bool reference_enabled) const
+{
+	const float reference_angle = reference_enabled ? M_PI_F / 2.f : 0.f;
+
+	// Try one axis at a time (keep only one active return):
+	return Dcmf(Eulerf(0.f, reference_angle, 0.f)); // Pitch axis (+/-90 deg)
+	// return Dcmf(Eulerf(reference_angle, 0.f, 0.f)); // Roll axis (+/-90 deg)
+	// return Dcmf(Eulerf(0.f, 0.f, reference_angle)); // Yaw axis (+/-90 deg)
+}
+
 void VehicleIMU::UpdateAttitudeReferenceFromRC()
 {
 	input_rc_s input_rc;
@@ -800,7 +810,7 @@ void VehicleIMU::UpdateAttitudeReferenceFromRC()
 	if (_reference_switch_state == ReferenceSwitchState::Unknown) {
 		_reference_switch_state = new_switch_state;
 		_reference_pitch_90_enabled = (_reference_switch_state == ReferenceSwitchState::High);
-		_reference_frame_rotation = Dcmf(Eulerf(0.f, _reference_pitch_90_enabled ? M_PI_F / 2.f : 0.f, 0.f));
+		_reference_frame_rotation = ComputeReferenceRotation(_reference_pitch_90_enabled);
 		_reference_frame_rotation_pending = _reference_frame_rotation;
 		return;
 	}
@@ -810,7 +820,7 @@ void VehicleIMU::UpdateAttitudeReferenceFromRC()
 
 		if (reference_pitch_90_enabled != _reference_pitch_90_enabled) {
 			_reference_pitch_90_enabled = reference_pitch_90_enabled;
-			_reference_frame_rotation_pending = Dcmf(Eulerf(0.f, _reference_pitch_90_enabled ? M_PI_F / 2.f : 0.f, 0.f));
+			_reference_frame_rotation_pending = ComputeReferenceRotation(_reference_pitch_90_enabled);
 			_reference_frame_step_rad = _reference_pitch_90_enabled ? M_PI_F / 2.f : -M_PI_F / 2.f;
 			_reference_frame_step_pending = true;
 		}
