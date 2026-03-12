@@ -185,8 +185,6 @@ private:
 
 	// One-key attitude reference switch (RC channel 6): level frame <-> +90 deg pitch frame
 	bool _reference_pitch_90_enabled{false};
-	bool _reference_frame_step_pending{false};
-	float _reference_frame_step_rad{0.f};
 	matrix::Dcmf _reference_frame_rotation{matrix::Eulerf(0.f, 0.f, 0.f)};
 	matrix::Dcmf _reference_frame_rotation_pending{matrix::Eulerf(0.f, 0.f, 0.f)};
 
@@ -202,9 +200,6 @@ private:
 	static constexpr uint16_t kReferenceSwitchPwmLow{1400};
 	static constexpr uint16_t kReferenceSwitchPwmHigh{1600};
 
-	// Select which published attitude axis gets the 90deg re-reference step.
-	// 0 = roll (X), 1 = pitch (Y), 2 = yaw (Z)
-	static constexpr int kReferenceStepAxis{1};
 
 	bool _accel_cal_available{false};
 	bool _gyro_cal_available{false};
