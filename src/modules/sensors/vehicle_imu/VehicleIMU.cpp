@@ -190,6 +190,8 @@ void VehicleIMU::Run()
 		}
 	}
 
+	UpdateAttitudeReferenceFromRC();
+
 	// reset data gap monitor
 	_data_gap = false;
 
@@ -549,6 +551,8 @@ bool VehicleIMU::Publish()
 	if (_accel_integrator.reset(delta_velocity, imu.delta_velocity_dt)
 	    && _gyro_integrator.reset(delta_angle, imu.delta_angle_dt)) {
 
+		const Dcmf reference_frame_rotation = _reference_frame_rotation;
+
 		if (_accel_calibration.enabled() && _gyro_calibration.enabled()) {
 
 			// delta angle: apply offsets, scale, and board rotation
@@ -556,7 +560,12 @@ bool VehicleIMU::Publish()
 			const float gyro_dt_s = 1.e-6f * imu.delta_angle_dt;
 			const Vector3f angular_velocity{_gyro_calibration.Correct(delta_angle / gyro_dt_s)};
 			UpdateGyroVibrationMetrics(angular_velocity);
-			const Vector3f delta_angle_corrected{angular_velocity * gyro_dt_s};
+			Vector3f delta_angle_corrected{reference_frame_rotation * (angular_velocity * gyro_dt_s)};
+
+			// Apply one-shot attitude step directly in published frame (pitch axis) to avoid axis-coupling.
+			if (_reference_frame_step_pending) {
+				delta_angle_corrected(1) += _reference_frame_step_rad;
+			}
 
 			// accumulate delta angle coning corrections
 			_coning_norm_accum += accumulated_coning_corrections.norm() * gyro_dt_s;
@@ -568,7 +577,7 @@ bool VehicleIMU::Publish()
 			const float accel_dt_s = 1.e-6f * imu.delta_velocity_dt;
 			const Vector3f acceleration{_accel_calibration.Correct(delta_velocity / accel_dt_s)};
 			UpdateAccelVibrationMetrics(acceleration);
-			const Vector3f delta_velocity_corrected{acceleration * accel_dt_s};
+			const Vector3f delta_velocity_corrected{reference_frame_rotation * (acceleration * accel_dt_s)};
 
 			// vehicle_imu_status
 			//  publish before vehicle_imu so that error counts are available synchronously if needed
@@ -671,6 +680,11 @@ bool VehicleIMU::Publish()
 			_gyro_publish_latency_mean_us.update(imu.timestamp - _gyro_timestamp_last);
 			_gyro_update_latency_mean_us.update(imu.timestamp - _gyro_timestamp_sample_last);
 
+			if (_reference_frame_step_pending) {
+				_reference_frame_rotation = _reference_frame_rotation_pending;
+				_reference_frame_step_pending = false;
+			}
+
 			updated = true;
 		}
 	}
@@ -758,6 +772,51 @@ void VehicleIMU::UpdateGyroVibrationMetrics(const Vector3f &angular_velocity)
 					+ 0.01f * Vector3f(angular_velocity - _angular_velocity_prev).norm();
 
 	_angular_velocity_prev = angular_velocity;
+}
+
+void VehicleIMU::UpdateAttitudeReferenceFromRC()
+{
+	input_rc_s input_rc;
+
+	if (!_input_rc_sub.update(&input_rc)) {
+		return;
+	}
+
+	if (input_rc.rc_lost || input_rc.rc_failsafe || (input_rc.channel_count <= kReferenceSwitchRCChannel)) {
+		return;
+	}
+
+	const uint16_t channel_pwm = input_rc.values[kReferenceSwitchRCChannel];
+
+	ReferenceSwitchState new_switch_state = _reference_switch_state;
+
+	if (channel_pwm >= kReferenceSwitchPwmHigh) {
+		new_switch_state = ReferenceSwitchState::High;
+
+	} else if (channel_pwm <= kReferenceSwitchPwmLow) {
+		new_switch_state = ReferenceSwitchState::Low;
+	}
+
+	if (_reference_switch_state == ReferenceSwitchState::Unknown) {
+		_reference_switch_state = new_switch_state;
+		_reference_pitch_90_enabled = (_reference_switch_state == ReferenceSwitchState::High);
+		_reference_frame_rotation = Dcmf(Eulerf(0.f, _reference_pitch_90_enabled ? M_PI_F / 4.f : 0.f, 0.f));
+		_reference_frame_rotation_pending = _reference_frame_rotation;
+		return;
+	}
+
+	if ((new_switch_state != _reference_switch_state) && (new_switch_state != ReferenceSwitchState::Unknown)) {
+		const bool reference_pitch_90_enabled = (new_switch_state == ReferenceSwitchState::High);
+
+		if (reference_pitch_90_enabled != _reference_pitch_90_enabled) {
+			_reference_pitch_90_enabled = reference_pitch_90_enabled;
+			_reference_frame_rotation_pending = Dcmf(Eulerf(0.f, _reference_pitch_90_enabled ? M_PI_F / 4.f : 0.f, 0.f));
+			_reference_frame_step_rad = _reference_pitch_90_enabled ? M_PI_F / 2.f : -M_PI_F / 2.f;
+			_reference_frame_step_pending = true;
+		}
+
+		_reference_switch_state = new_switch_state;
+	}
 }
 
 void VehicleIMU::PrintStatus()
