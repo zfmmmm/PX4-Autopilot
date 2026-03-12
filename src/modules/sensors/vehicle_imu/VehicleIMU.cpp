@@ -562,6 +562,9 @@ bool VehicleIMU::Publish()
 			UpdateGyroVibrationMetrics(angular_velocity);
 			Vector3f delta_angle_corrected{reference_frame_rotation * (angular_velocity * gyro_dt_s)};
 
+			if (_reference_frame_step_pending) {
+				delta_angle_corrected(kReferenceStepAxis) += _reference_frame_step_rad;
+			}
 
 			// accumulate delta angle coning corrections
 			_coning_norm_accum += accumulated_coning_corrections.norm() * gyro_dt_s;
@@ -676,6 +679,9 @@ bool VehicleIMU::Publish()
 			_gyro_publish_latency_mean_us.update(imu.timestamp - _gyro_timestamp_last);
 			_gyro_update_latency_mean_us.update(imu.timestamp - _gyro_timestamp_sample_last);
 
+			if (_reference_frame_step_pending) {
+				_reference_frame_step_pending = false;
+			}
 
 			updated = true;
 		}
@@ -814,6 +820,8 @@ void VehicleIMU::UpdateAttitudeReferenceFromRC()
 			_reference_pitch_90_enabled = reference_pitch_90_enabled;
 			_reference_frame_rotation_pending = ComputeReferenceRotation(_reference_pitch_90_enabled);
 			_reference_frame_rotation = _reference_frame_rotation_pending;
+			_reference_frame_step_rad = _reference_pitch_90_enabled ? M_PI_F / 2.f : -M_PI_F / 2.f;
+			_reference_frame_step_pending = true;
 		}
 
 		_reference_switch_state = new_switch_state;
