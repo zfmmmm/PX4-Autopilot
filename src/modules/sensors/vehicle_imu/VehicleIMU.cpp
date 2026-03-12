@@ -553,10 +553,6 @@ bool VehicleIMU::Publish()
 
 		const Dcmf reference_frame_rotation = _reference_frame_rotation;
 
-		if (_reference_frame_step_pending) {
-			delta_angle(1) += _reference_frame_step_rad;
-		}
-
 		if (_accel_calibration.enabled() && _gyro_calibration.enabled()) {
 
 			// delta angle: apply offsets, scale, and board rotation
@@ -564,7 +560,12 @@ bool VehicleIMU::Publish()
 			const float gyro_dt_s = 1.e-6f * imu.delta_angle_dt;
 			const Vector3f angular_velocity{_gyro_calibration.Correct(delta_angle / gyro_dt_s)};
 			UpdateGyroVibrationMetrics(angular_velocity);
-			const Vector3f delta_angle_corrected{reference_frame_rotation * (angular_velocity * gyro_dt_s)};
+			Vector3f delta_angle_corrected{reference_frame_rotation * (angular_velocity * gyro_dt_s)};
+
+			// Apply one-shot attitude step directly in published frame (pitch axis) to avoid axis-coupling.
+			if (_reference_frame_step_pending) {
+				delta_angle_corrected(1) += _reference_frame_step_rad;
+			}
 
 			// accumulate delta angle coning corrections
 			_coning_norm_accum += accumulated_coning_corrections.norm() * gyro_dt_s;
@@ -799,7 +800,7 @@ void VehicleIMU::UpdateAttitudeReferenceFromRC()
 	if (_reference_switch_state == ReferenceSwitchState::Unknown) {
 		_reference_switch_state = new_switch_state;
 		_reference_pitch_90_enabled = (_reference_switch_state == ReferenceSwitchState::High);
-		_reference_frame_rotation = Dcmf(Eulerf(0.f, _reference_pitch_90_enabled ? M_PI_F / 2.f : 0.f, 0.f));
+		_reference_frame_rotation = Dcmf(Eulerf(0.f, _reference_pitch_90_enabled ? M_PI_F / 4.f : 0.f, 0.f));
 		_reference_frame_rotation_pending = _reference_frame_rotation;
 		return;
 	}
@@ -809,7 +810,7 @@ void VehicleIMU::UpdateAttitudeReferenceFromRC()
 
 		if (reference_pitch_90_enabled != _reference_pitch_90_enabled) {
 			_reference_pitch_90_enabled = reference_pitch_90_enabled;
-			_reference_frame_rotation_pending = Dcmf(Eulerf(0.f, _reference_pitch_90_enabled ? M_PI_F / 2.f : 0.f, 0.f));
+			_reference_frame_rotation_pending = Dcmf(Eulerf(0.f, _reference_pitch_90_enabled ? M_PI_F / 4.f : 0.f, 0.f));
 			_reference_frame_step_rad = _reference_pitch_90_enabled ? M_PI_F / 2.f : -M_PI_F / 2.f;
 			_reference_frame_step_pending = true;
 		}
