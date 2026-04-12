@@ -44,34 +44,40 @@
 #include <px4_platform_common/px4_config.h>
 #include <px4_platform_common/tasks.h>
 
-// uORB message headers
-#include <uORB/topics/depth_sensor.h> // Custom data source to be published
-#include <uORB/topics/sensor_baro.h> // Official MS5837 published data source
+// uORB messaging headers
+#include <uORB/topics/depth_sensor.h>
+#include <uORB/topics/sensor_baro.h>
 
 extern "C" __EXPORT int depth_sensor_main(int argc, char* argv[]);
 
 /* =========================================================================
- * Global state and configuration variables (use volatile for cross-thread visibility)
+ * System state and physical configuration parameters (thread-safe)
  * ========================================================================= */
 static volatile bool thread_should_exit = false;
 static volatile bool thread_running     = false;
-static volatile bool request_tare       = false; // Used to trigger surface zero calibration
+static volatile bool request_tare       = false;
 
-// Physical and calibration parameters
-static volatile float fluid_density_kg_m3 = 997.0f; // Default freshwater density
-static volatile float surface_pressure_pa = 101325.0f; // Baseline absolute pressure in air (default at startup)
-static volatile float offset_depth_m      = 0.0f; // Software depth offset
-static volatile float offset_temp_c       = 0.0f; // Software temperature offset
+// Core feature switch: controls whether advanced composite filtering is enabled
+static volatile bool enable_filter = true;
 
-// Target sensor instance (default is 1, instance 0 is usually used by the flight controller)
+// Fluid physics constants and compensation parameters
+static volatile float fluid_density_kg_m3 = 997.0f;
+static volatile float surface_pressure_pa = 101325.0f;
+static volatile float offset_depth_m      = 0.0f;
+static volatile float offset_temp_c       = 0.0f;
+
+// Target barometer instance
 static int target_baro_instance = 1;
 
 /* =========================================================================
- * Filter parameter configuration
+ * Composite filter configuration (Median rejection + 1D Kalman smoothing)
  * ========================================================================= */
-#define FILTER_WINDOW_SIZE 10 // Sliding window size: removes high-frequency noise (electrical noise)
-static const float LPF_ALPHA = 0.15f; // First-order low-pass filter coefficient (0.0~1.0): smoother with smaller value
-                                      // but more delay
+#define MEDIAN_WINDOW_SIZE 5 // Median window size; 5 is optimal for rejecting spikes with minimal computation
+
+static const float KALMAN_Q = 0.5f; // Process noise: expected system dynamics (larger = faster response)
+static const float KALMAN_R = 50.0f; // Measurement noise: sensor uncertainty (larger = smoother output)
+
+static const float TEMP_LPF_ALPHA = 0.1f; // Temperature low-pass filter coefficient
 
 /* =========================================================================
  * Function declarations
@@ -80,7 +86,7 @@ int depth_sensor_thread_main(int argc, char* argv[]);
 static void usage(const char* reason);
 
 /* =========================================================================
- * Command line help information
+ * CLI usage information
  * ========================================================================= */
 static void usage(const char* reason)
 {
@@ -88,16 +94,17 @@ static void usage(const char* reason)
   {
     PX4_WARN("%s", reason);
   }
-  fprintf(stderr, "usage: depth_sensor {start|stop|status|tare|offsetD <val>|offsetT <val>|density <val>}\n");
+  fprintf(stderr, "usage: depth_sensor {start|stop|status|tare|filter|offsetD|offsetT|density}\n");
   fprintf(stderr, "  start [-i <baro_instance>]  (default instance is 1)\n");
-  fprintf(stderr, "  tare                        (Set current filtered pressure as 0 meter depth)\n");
-  fprintf(stderr, "  offsetD <val>               (Add an offset to calculated depth in meters)\n");
-  fprintf(stderr, "  offsetT <val>               (Add an offset to measured temperature in Celsius)\n");
-  fprintf(stderr, "  density <val>               (Set fluid density in kg/m^3, e.g., 1025 for seawater)\n");
+  fprintf(stderr, "  filter <on|off>             (Enable or bypass the Median+Kalman filter)\n");
+  fprintf(stderr, "  tare                        (Set current active pressure as 0 meter depth)\n");
+  fprintf(stderr, "  offsetD <val>               (Add offset to calculated depth in meters)\n");
+  fprintf(stderr, "  offsetT <val>               (Add offset to measured temperature in Celsius)\n");
+  fprintf(stderr, "  density <val>               (Set fluid density in kg/m^3)\n");
 }
 
 /* =========================================================================
- * Main entry and command-line parsing
+ * Main entry and command dispatcher
  * ========================================================================= */
 int depth_sensor_main(int argc, char* argv[])
 {
@@ -107,7 +114,7 @@ int depth_sensor_main(int argc, char* argv[])
     return 1;
   }
 
-  /* Start background thread */
+  /* Start thread */
   if (!strcmp(argv[1], "start"))
   {
     if (thread_running)
@@ -115,19 +122,16 @@ int depth_sensor_main(int argc, char* argv[])
       PX4_INFO("depth_sensor is already running");
       return 0;
     }
-
-    // Parse instance parameter, e.g.: depth_sensor start -i 1
     if (argc >= 4 && !strcmp(argv[2], "-i"))
     {
       target_baro_instance = atoi(argv[3]);
     }
-
     thread_should_exit = false;
     px4_task_spawn_cmd("depth_sensor", SCHED_DEFAULT, SCHED_PRIORITY_DEFAULT, 2000, depth_sensor_thread_main, NULL);
     return 0;
   }
 
-  /* Stop background thread */
+  /* Stop thread */
   if (!strcmp(argv[1], "stop"))
   {
     if (!thread_running)
@@ -139,18 +143,40 @@ int depth_sensor_main(int argc, char* argv[])
     return 0;
   }
 
-  /* Check current status and parameters */
+  /* Status query */
   if (!strcmp(argv[1], "status"))
   {
     PX4_INFO("Status: %s", thread_running ? "Running" : "Stopped");
-    PX4_INFO("Baro Instance Listening: %d", target_baro_instance);
+    PX4_INFO("Baro Instance: %d | Advanced Filter: %s", target_baro_instance, enable_filter ? "ON" : "OFF");
     PX4_INFO("Config -> Density: %.1f kg/m^3", (double) fluid_density_kg_m3);
     PX4_INFO("Config -> Surface Pressure Zero: %.2f Pa", (double) surface_pressure_pa);
     PX4_INFO("Config -> Offset Depth: %.2f m | Offset Temp: %.2f C", (double) offset_depth_m, (double) offset_temp_c);
     return 0;
   }
 
-  /* Trigger zero calibration (send this command in air / above water surface) */
+  /* Filter bypass control */
+  if (!strcmp(argv[1], "filter"))
+  {
+    if (argc >= 3)
+    {
+      if (!strcmp(argv[2], "on"))
+      {
+        enable_filter = true;
+        PX4_INFO("Advanced Filter (Median + Kalman) is now ON");
+        return 0;
+      }
+      else if (!strcmp(argv[2], "off"))
+      {
+        enable_filter = false;
+        PX4_INFO("Advanced Filter is now OFF. Publishing RAW data.");
+        return 0;
+      }
+    }
+    usage("filter command requires 'on' or 'off'");
+    return 1;
+  }
+
+  /* Tare trigger */
   if (!strcmp(argv[1], "tare"))
   {
     if (!thread_running)
@@ -159,11 +185,11 @@ int depth_sensor_main(int argc, char* argv[])
       return 1;
     }
     request_tare = true;
-    PX4_INFO("Tare requested. Background thread will zero the depth shortly...");
+    PX4_INFO("Tare requested. Zeroing depth against current environmental pressure...");
     return 0;
   }
 
-  /* Modify runtime parameters */
+  /* Parameter adjustments */
   if (argc >= 3)
   {
     if (!strcmp(argv[1], "offsetD"))
@@ -191,13 +217,13 @@ int depth_sensor_main(int argc, char* argv[])
 }
 
 /* =========================================================================
- * Background core data processing thread
+ * Core processing thread: subscription, filtering, and physical modeling
  * ========================================================================= */
 int depth_sensor_thread_main(int argc, char* argv[])
 {
   thread_running = true;
 
-  /* 1. Subscribe to sensor_baro topic published by MS5837 (specific instance) */
+  /* 1. Subscribe to uORB topic */
   int baro_sub_fd = orb_subscribe_multi(ORB_ID(sensor_baro), target_baro_instance);
   if (baro_sub_fd < 0)
   {
@@ -206,100 +232,134 @@ int depth_sensor_thread_main(int argc, char* argv[])
     return -1;
   }
 
-  /* 2. Prepare the custom topic to be published */
+  /* 2. Prepare publication structure */
   struct depth_sensor_s report;
   memset(&report, 0, sizeof(report));
   orb_advert_t depth_pub = orb_advertise(ORB_ID(depth_sensor), &report);
 
-  /* 3. Configure poll wait handle */
+  /* 3. Setup polling */
   px4_pollfd_struct_t fds[1];
   fds[0].fd     = baro_sub_fd;
   fds[0].events = POLLIN;
 
   /* =======================================
-   * Filter state variable initialization
+   * Filter internal state allocation
    * ======================================= */
-  float pressure_history[FILTER_WINDOW_SIZE] = {0};
-  int history_idx                            = 0;
-  bool filter_initialized                    = false;
+  float median_buffer[MEDIAN_WINDOW_SIZE] = {0};
+  int median_idx                          = 0;
+  bool filter_initialized                 = false;
 
-  float final_filtered_pressure = 0.0f;
-  float final_filtered_temp     = 0.0f;
+  // 1D Kalman filter state
+  float kalman_x = 0.0f; // Estimated state
+  float kalman_p = 1.0f; // Estimate covariance
+
+  float final_filtered_temp = 0.0f;
 
   PX4_INFO("Depth translation engine started. Target instance: %d", target_baro_instance);
 
   /* =======================================
-   * Thread main loop
+   * Event-driven main loop
    * ======================================= */
   while (!thread_should_exit)
   {
-    // Suspend thread and wait for data arrival, timeout set to 500 ms
     int poll_ret = px4_poll(fds, 1, 500);
 
     if (poll_ret > 0 && (fds[0].revents & POLLIN))
     {
       struct sensor_baro_s baro_data;
-      // Safely copy data from kernel pipe
       orb_copy(ORB_ID(sensor_baro), baro_sub_fd, &baro_data);
 
-      /* Get raw data (units: Pascal Pa and Celsius C) */
+      /* Raw sensor data */
       float raw_pressure_pa = baro_data.pressure;
       float raw_temp_c      = baro_data.temperature;
 
+      /* Active data path (raw or filtered) */
+      float active_pressure = raw_pressure_pa;
+      float active_temp     = raw_temp_c;
+
       /* =======================================================
-       * Filter computation logic
+       * Composite filtering pipeline (Median + Kalman)
        * ======================================================= */
-      // Initialize filter array to avoid ramp-up from zero at startup
-      if (!filter_initialized)
+      if (enable_filter)
       {
-        for (int i = 0; i < FILTER_WINDOW_SIZE; i++)
+        // Initialize filter to avoid startup spikes
+        if (!filter_initialized)
         {
-          pressure_history[i] = raw_pressure_pa;
+          for (int i = 0; i < MEDIAN_WINDOW_SIZE; i++)
+          {
+            median_buffer[i] = raw_pressure_pa;
+          }
+          kalman_x            = raw_pressure_pa;
+          kalman_p            = 1.0f;
+          final_filtered_temp = raw_temp_c;
+          filter_initialized  = true;
         }
-        final_filtered_pressure = raw_pressure_pa;
-        final_filtered_temp     = raw_temp_c;
-        filter_initialized      = true;
+
+        /* --- Stage 1: Median filter (outlier rejection) --- */
+        median_buffer[median_idx] = raw_pressure_pa;
+        median_idx                = (median_idx + 1) % MEDIAN_WINDOW_SIZE;
+
+        float sort_buffer[MEDIAN_WINDOW_SIZE];
+        memcpy(sort_buffer, median_buffer, sizeof(median_buffer));
+
+        // Bubble sort (efficient for N=5)
+        for (int i = 0; i < MEDIAN_WINDOW_SIZE - 1; i++)
+        {
+          for (int j = 0; j < MEDIAN_WINDOW_SIZE - i - 1; j++)
+          {
+            if (sort_buffer[j] > sort_buffer[j + 1])
+            {
+              float temp         = sort_buffer[j];
+              sort_buffer[j]     = sort_buffer[j + 1];
+              sort_buffer[j + 1] = temp;
+            }
+          }
+        }
+
+        float measurement_z = sort_buffer[MEDIAN_WINDOW_SIZE / 2];
+
+        /* --- Stage 2: 1D Kalman filter (noise smoothing) --- */
+        float p_predict = kalman_p + KALMAN_Q;
+
+        float K = p_predict / (p_predict + KALMAN_R);
+
+        kalman_x = kalman_x + K * (measurement_z - kalman_x);
+        kalman_p = (1.0f - K) * p_predict;
+
+        /* --- Temperature low-pass filter --- */
+        final_filtered_temp = (TEMP_LPF_ALPHA * raw_temp_c) + ((1.0f - TEMP_LPF_ALPHA) * final_filtered_temp);
+
+        active_pressure = kalman_x;
+        active_temp     = final_filtered_temp;
       }
-
-      // Stage 1: Sliding window mean filter (remove extreme noise)
-      pressure_history[history_idx] = raw_pressure_pa;
-      history_idx                   = (history_idx + 1) % FILTER_WINDOW_SIZE;
-
-      float window_sum = 0.0f;
-      for (int i = 0; i < FILTER_WINDOW_SIZE; i++)
+      else
       {
-        window_sum += pressure_history[i];
+        // Reset filter so it reinitializes correctly when re-enabled
+        filter_initialized = false;
       }
-      float moving_avg_pressure = window_sum / FILTER_WINDOW_SIZE;
-
-      // Stage 2: First-order low-pass filter EMA (adds inertia, smooth output)
-      final_filtered_pressure = (LPF_ALPHA * moving_avg_pressure) + ((1.0f - LPF_ALPHA) * final_filtered_pressure);
-      final_filtered_temp     = (LPF_ALPHA * raw_temp_c) + ((1.0f - LPF_ALPHA) * final_filtered_temp);
-      /* ======================================================= */
 
       /* =======================================================
-       * Zero calibration logic (Tare)
+       * Tare (zeroing) logic
        * ======================================================= */
       if (request_tare)
       {
-        // Lock current filtered pressure as new surface absolute pressure
-        surface_pressure_pa = final_filtered_pressure;
+        surface_pressure_pa = active_pressure;
         request_tare        = false;
-        PX4_INFO("Zeroed! New surface pressure calibrated at: %.2f Pa", (double) surface_pressure_pa);
+        PX4_INFO("Zeroed! New surface pressure baseline: %.2f Pa", (double) surface_pressure_pa);
       }
 
       /* =======================================================
-       * Physical conversion logic (fluid statics)
+       * Hydrostatic depth calculation
        * ======================================================= */
-      float final_temp = final_filtered_temp + offset_temp_c;
+      float final_temp = active_temp + offset_temp_c;
 
-      // h = (P_sensor - P_surface) / (rho * g)
-      float depth_calculated = (final_filtered_pressure - surface_pressure_pa) / (fluid_density_kg_m3 * 9.80665f);
+      // Formula: h = (P_sensor - P_surface) / (rho * g)
+      float depth_calculated = (active_pressure - surface_pressure_pa) / (fluid_density_kg_m3 * 9.80665f);
 
       float final_depth = depth_calculated + offset_depth_m;
 
       /* =======================================================
-       * Packaging and publishing
+       * Publish result
        * ======================================================= */
       report.timestamp     = hrt_absolute_time();
       report.depth_m       = final_depth;
@@ -309,12 +369,13 @@ int depth_sensor_thread_main(int argc, char* argv[])
     }
     else if (poll_ret == 0)
     {
-      // Poll timeout: no sensor data received for a long time, useful for debugging wiring issues
-      // PX4_WARN("Poll timeout: No data from MS5837 for 500ms");
+      // Optional watchdog timeout handling
     }
   }
 
-  /* Cleanup on exit */
+  /* =======================================================
+   * Cleanup and exit
+   * ======================================================= */
   PX4_INFO("Depth translation engine stopping...");
   orb_unsubscribe(baro_sub_fd);
   if (depth_pub != nullptr)
