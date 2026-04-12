@@ -277,7 +277,6 @@ set(msg_files
 	versioned/VehicleStatus.msg
 	versioned/VtolVehicleStatus.msg
 	versioned/Wind.msg
-	versioned/DepthSensor.msg #add the file
 )
 list(SORT msg_files)
 

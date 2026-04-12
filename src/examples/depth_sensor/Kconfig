@@ -1,5 +1,0 @@
-menuconfig EXAMPLES_DEPTH_SENSOR
-        bool "Depth Sensor Serial"
-        default n
-        ---help---
-                Depth Sensor Serial

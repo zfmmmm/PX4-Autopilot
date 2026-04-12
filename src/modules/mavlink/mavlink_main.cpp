@@ -162,6 +162,13 @@ Mavlink::~Mavlink()
 		} while (running());
 	}
 
+	if (_instance_id >= 0) {
+		{
+			LockGuard lg{mavlink_module_mutex};
+			mavlink_module_instances[_instance_id] = nullptr;
+		}
+		mavlink_instance_count.fetch_sub(1);
+	}
 
 	// if this instance was responsible for checking events then select a new mavlink instance
 	if (check_events()) {
@@ -374,13 +381,8 @@ Mavlink::destroy_all_instances()
 		LockGuard lg{mavlink_module_mutex};
 
 		// we know all threads have exited, so it's safe to delete objects.
-		for (int i = 0; i < MAVLINK_COMM_NUM_BUFFERS; i++) {
-			if (mavlink_module_instances[i] != nullptr) {
-				Mavlink *inst = mavlink_module_instances[i];
-				mavlink_module_instances[i] = nullptr;
-				mavlink_instance_count.fetch_sub(1);
-				delete inst;
-			}
+		for (Mavlink *inst_to_del : mavlink_module_instances) {
+			delete inst_to_del;
 		}
 	}
 
@@ -2919,14 +2921,6 @@ int Mavlink::start_helper(int argc, char *argv[])
 		res = instance->task_main(argc, argv);
 
 		if (res != PX4_OK) {
-			LockGuard lg{mavlink_module_mutex};
-			int instance_id = instance->get_instance_id();
-
-			if (instance_id >= 0) {
-				mavlink_module_instances[instance_id] = nullptr;
-				mavlink_instance_count.fetch_sub(1);
-			}
-
 			delete instance;
 		}
 	}
@@ -3241,9 +3235,8 @@ Mavlink::stop_command(int argc, char *argv[])
 
 				for (int mavlink_instance = 0; mavlink_instance < MAVLINK_COMM_NUM_BUFFERS; mavlink_instance++) {
 					if (mavlink_module_instances[mavlink_instance] == inst) {
-						mavlink_module_instances[mavlink_instance] = nullptr;
-						mavlink_instance_count.fetch_sub(1);
 						delete inst;
+						mavlink_module_instances[mavlink_instance] = nullptr;
 						return PX4_OK;
 					}
 				}
