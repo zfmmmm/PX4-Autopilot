@@ -14,4 +14,5 @@ bmi088 -s -b 4 -G -R 2 start
 
 # internal baro
 spl06 -X -a 0x77 start
-depth_sensor start
+ms5837 start -X
+depth_sensor start -i 1
