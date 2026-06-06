@@ -13,6 +13,10 @@ param set-default PWM_MAIN_TIM0 -4
 param set-default RC_INPUT_PROTO -1
 
 param set-default IMU_GYRO_RATEMAX 2000
+param set-default USB_MAV_MODE 8
+param set-default MAV_0_MODE 8
+param set-default MAV_0_RATE 0
+param set-default SER_TEL1_BAUD 921600
 param set-default SYS_AUTOSTART 4001
 param set-default MC_PITCHRATE_K 0.4
 param set-default MC_ROLLRATE_K 0.35
